@@ -1,0 +1,839 @@
+---
+title: "PROSPECT Data exploration and cleaning"
+author: "Dr. Rianne Fijten"
+output: html_document
+---
+
+# Input information
+The parameters in this section will need to be set correctly for this script to work. *You will need to change it to fit your setup*.
+```{r, input information, results='hide'}
+setwd("C:/Set/your/path/here/")
+
+scriptsLocations = paste(getwd(), "scripts/")
+
+#there are two datasets due to additions. One in SAS format and the other in CSV format.
+sasDataFilePath = "/path/to/data/dataset.sas7bdat"
+csvDataFilePath = "/path/to/data/secondDataTransfer/K19117_2.csv"
+```
+
+# Preparations
+These tasks, mainly loading in libraries, need to be done before the data analysis can begin.
+```{r, preparations, echo=T, results='hide'}
+source("path/to/scripts/importAllHandmadeFunctions.R")
+importAllHandmadeFunctions(scriptsLocations)
+
+library(knitr)
+library(RColorBrewer)
+library(plyr)
+library(ggplot2)
+library(circlize, warn.conflicts=F, quietly=T)
+library(networkD3)
+```
+
+# Data import
+Due to a second data transfer, we have two documents that need to be combined. THe first one is a SAS document that is extracted here:
+
+```{r, data import SAS}
+sasData = readSasFile(paste(getwd(), sasDataFilePath, sep=""))
+row.names(sasData) = sasData$id #replace row names with identifiers
+```
+
+Then we import the second data set that we received, which was sent in a CSV format.
+
+```{r, data import CSV}
+csvData = read.table(paste(getwd(), csvDataFilePath, sep = ""), sep = ";", header = T, row.names = 1, na.strings = "NA")
+csvData = csvData[order(as.numeric(row.names(csvData))),] #reorder the identifiers
+```
+
+Now we are going to combine the two datasets by their row number, a.k.a. the identifier, as these are the link between the two datasets.
+
+```{r, merge datasets}
+importedData = cbind(sasData, csvData[match(rownames(sasData), rownames(csvData)),])
+``` 
+
+
+# Were patients diagnosed and treated in the same hospital? 
+In this dataset there are two columns related to the hospital: *"ZKHanoniem_eerste"* and *"ZKHanoniem_behandeling"*. The former is the hospital in which a patient was diagnosed and the latter is the hospital that treated the patient. The codes for hospital of diagnosis and treatment were not anonymized in the same manner. This needs to be fixed.
+
+## Fix the differences between codes for hospitals of diagnosis and treatment. 
+We need to add 118 to the *"zkhanoniem_behandeling"* column to be able to match them to the *"zkhanoniem_eerste"*.
+
+```{r, fix differences hospital data}
+importedData$ZKHanoniem_behandeling = importedData$ZKHanoniem_behandeling+118;
+```
+
+Now I want to know whether patients were diagnosed and treated in the same hospital, because this could potentially influence our results. 
+
+```{r, hospital migration}
+truefalse = 0
+for (i in 1:dim(importedData)[1]){
+    if (importedData$ZKHanoniem_eerste[i] == importedData$ZKHanoniem_behandeling[i])
+      truefalse = truefalse + 1
+}
+paste(truefalse, "patients stayed in the same hospital, i.e.", round(truefalse/dim(importedData)[1]*100, digits=2), "percent of all", dim(importedData)[1], "patients")
+
+```
+
+According to these results, most patients stayed in the same hospital for treatment.
+
+## Circular diagram
+Let's visualize this migration within or between hospitals. 
+
+```{r, circular diagram for hospitals}
+hospitalAdjacencyList = createAdjacencyList(importedData[,which(grepl("ZKH", names(importedData)))])
+chordDiagram(hospitalAdjacencyList)
+```
+
+# Migration of the epic questionnaire answers
+It's important to know how many patients change their answers to the EPIC-26 questions when comparing the three time points in this dataset (at diagnosis, after 1 year, after 2 years).
+The questions we will be testing are the ones we will be predicting with AI:
+- urine loss
+- quality of erections (later known as firmness) 
+- frequency of erection (later known as reliability)
+- urge to have bowel movements
+
+## urine loss
+```{r, sankey plot for urine loss}
+convertedData = convertNanToZero(importedData[,which(grepl("urineverlies", names(importedData)))])
+adjacencyList0to1 = createAdjacencyList(convertedData[1:2])
+adjacencyList1to2 = createAdjacencyList(convertedData[2:3])
+nodeNames = rep(c("Not available", "More than once a day", "About once a day", "More than once a week", "About once a week", "Rarely or never"), times=3)
+createSankeyDiagram3Timepoints(adjacencyList0to1, adjacencyList1to2, nodeNames)
+
+```
+
+## Quantity of erections, a.k.a. firmness
+```{r, quality of erections}
+convertedData = convertNanToZero(importedData[,which(grepl("kwalerectie", names(importedData)))])
+adjacencyList0to1 = createAdjacencyList(convertedData[1:2])
+adjacencyList1to2 = createAdjacencyList(convertedData[2:3])
+nodeNames = rep(c("Not available", "None at all", "Not firm enough for any sexual activity", "Firm enough for masturbation and foreplay only", "Firm enough for intercourse"), times=3)
+createSankeyDiagram3Timepoints(adjacencyList0to1, adjacencyList1to2, nodeNames)
+```
+
+## Frequency of erections, a.k.a. reliability
+```{r, sankey for reliability of erection}
+convertedData = convertNanToZero(importedData[,which(grepl("kwanterectie", names(importedData)))])
+adjacencyList0to1 = createAdjacencyList(convertedData[1:2])
+adjacencyList1to2 = createAdjacencyList(convertedData[2:3])
+nodeNames = rep(c("Not available", "I NEVER had an erection when I wanted one", "I had an erection LESS THAN HALF the time I wanted one", "I had an erection ABOUT HALF the time I wanted one", "I had an erection MORE THAN HALF the time I wanted one", "I had an erection WHENEVER I wanted one"), times=3)
+createSankeyDiagram3Timepoints(adjacencyList0to1, adjacencyList1to2, nodeNames)
+```
+
+## urge to have bowel movement
+```{r, urge bowel movement}
+convertedData = convertNanToZero(importedData[,which(grepl("drangontlasting", names(importedData)))])
+adjacencyList0to1 = createAdjacencyList(convertedData[1:2])
+adjacencyList1to2 = createAdjacencyList(convertedData[2:3])
+nodeNames = c(c("Not available", "No problem", "Very small problem", "Small problem", "Moderate problem", "Big problem"), rep(c("Not available", "No problem", "Very small problem", "Small problem", "Moderate problem", "Big problem", "Not available"), times=2))
+createSankeyDiagram3Timepoints(adjacencyList0to1, adjacencyList1to2, nodeNames)
+```
+
+# Combine sub-treatments into the big four (EBRT, brachy therapy, prostatectomy, watchful waiting)
+Terms used for variable "Beh", which holds to information to the treatment patients have had:
+- RP = radical prostatectomy
+- LND = lymph node dissection
+- EBRT = external beam radiotherapy
+- HT = hormone therapy
+- CT = cryotherapy
+- BRACHY = brachytherapy
+- URT = ???
+- CHEMO & CT = chemotherapy
+- AS = active surveillance
+- GEEN ACTIEVE THERAPIE = no active therapy
+
+The dataset contains combinations or variants of different treatments. we'll combine those to create 4 big groups. 
+
+```{r, create treatment groups}
+treatments = rep(0, dim(importedData)[2])
+
+# prostatectomy
+treatments[which(importedData$beh == 1)] = 1
+treatments[which(importedData$beh == 2)] = 1
+treatments[which(importedData$beh == 7)] = 1
+
+#EBRT
+treatments[which(importedData$beh == 9)] = 2
+treatments[which(importedData$beh == 12)] = 2
+treatments[which(importedData$beh == 14)] = 2
+treatments[which(importedData$beh == 17)] = 2
+
+# brachy
+treatments[which(importedData$beh == 10)] = 3
+treatments[which(importedData$beh == 15)] = 3
+
+# no active therapy
+treatments[which(importedData$beh == 28)] = 4
+
+
+treatments = convertNanToZero(treatments)
+count(treatments)
+```
+
+The counts show that a small portion of the patients in the dataset had a combination of treatments, for example: EBRT + brachy. These patients will be excluded from the dataset (n = 15).
+
+```{r, remove dual treatments}
+importedData$treatments = treatments
+importedData = importedData[-which(treatments == 0),]
+```
+
+## For all patients, add a column related to hormone therapie and nerve-sparing surgery
+The treatment groups above do contain patients that have received hormone therapy. Since hormone therapy is generally given as an additional treatment to one of the "big four" above, we will add two extra columns. One for hormone therapy and one for nerve-sparing surgery.
+
+### Hormone therapy
+First we'll do the one for hormone therapy. Here, patients that did not have hormone therapy are noted as 1, whereas patients that did have hormone therapy are noted as 2. 
+
+```{r, create hormone therapie column}
+hormoneTherapieNumbers = c(5:8, 14:22, 24, 25)
+importedData$hormoneTherapy = rep(1, dim(importedData)[1])
+for (i in 1:dim(importedData)[1]){
+  for (j in 1:length(hormoneTherapieNumbers)){
+    if (importedData$beh[i] == hormoneTherapieNumbers[j]){
+      importedData$hormoneTherapy[i] = 2
+    }
+  }
+}
+```
+
+### Nerve-sparing prostatectomy
+Now, we'll create a new column for nerve-sparing surgery, where patients that did not receive nerve-sparing surgery are noted as 1. Those that received partial nerve-sparing surgery are noted as 2 and those that received full nerve-sparing surgery are noted as 3. 
+The explanation file describes which numbers in the original data represent nerve-sparing or not. 
+
+The ones I define as not nerve-sparing are:
+- 0 = (Beiderzijds) niet zenuwsparend.
+
+The ones I define as partially nerve-sparing are:
+- 1 = Links niet zenuwsparend. Rechts partieel zenuwsparend.
+- 2 = Links niet zenuwsparend. Rechts zenuwsparend.
+- 3 = Links partieel zenuwsparend. Rechts niet zenuwsparend.
+- 4 = Links partieel zenuwsparend. Rechts partieel zenuwsparend.
+- 5 = Links partieel zenuwsparend. Rechts zenuwsparend.
+- 6 = Links zenuwsparend. Rechts niet zenuwsparend.
+- 7 = Links zenuwsparend. Rechts partieel zenuwsparend.
+- 9 = Eénzijdig zenuwsparend, maar zijde niet vermeld.
+
+The ones I define as fully nerve-sparing:
+- 8 = (Beiderzijds) zenuwsparend.
+
+These are gathered under the "unknown" category because of missing information
+- 10 = Rechts zenuwsparend, links niet vermeld
+- 11 = Links zenuwsparend, rechts niet vermeld
+- 12 = Anders
+- 99 = Onbekend
+
+```{r, create nerve-sparing surgery column}
+nerveSparingNo = 0
+nerveSparingPartial = c(1:7, 9)
+nerveSparingFull = 8
+
+nerveSparing = rep(NA, dim(importedData)[1])
+
+# no nerve-sparing surgery
+nerveSparing[which(importedData$zenuw_sparend == 0)] = 1
+
+# partial nerve-sparing surgery
+for (i in 1:nerveSparingPartial){
+  nerveSparing[which(importedData$zenuw_sparend == i)] = 2
+}
+
+# full nerve-sparing surgery
+nerveSparing[which(importedData$zenuw_sparend == 8)] = 3
+
+importedData$nerveSparing = nerveSparing
+```
+
+
+# Create separate columns for relevant comorbidities
+The most relevant comorbidities are diabetes and cardiovascular disease (https://pubmed.ncbi.nlm.nih.gov/18375048/ and https://pubmed.ncbi.nlm.nih.gov/18289562/).
+The variable explanations describe the following codes for these two diseases:
+* diabetes: 800, 801, 802, 803, 804, 805, 809
+* cardiovascular disease: 301, 302, 309, 311, 312, 313, 314, 315, 319, 320, 330, 341, 342, 343, 349, 350, 361, 362, 370, 391, 392, 399
+  *this one is tricky. The dataset contains two groups of comorbidities, heart disease and vascular disease, and have multiple options each. Technically they all fall into the category of cardiovascular disease, so we'll combine them into one. A few examples:*
+  + hearth failure
+  + myocard infarction
+  + angina pectoris (chest pain due to narrowing of arteries)
+  + presence of coronary stent
+  + stroke
+  + hypertension
+
+let's have a look at the numbers of patients with any form of heart disease in the dataset.
+
+```{r, check comorbidities cardio}
+comorbidities = importedData[,grepl("nComor", names(importedData))]
+comorbNumbersCardio = c(301, 302, 309, 311, 312, 313, 314, 315, 319, 320, 330, 341, 342, 343, 349, 350, 361, 362, 370, 391, 392, 399)
+comorbNumbersCardio = cbind(comorbNumbersCardio, rep(0, length(comorbNumbersCardio)))
+for (i in 1:dim(comorbidities)[2]){
+  for (j in 1:dim(comorbNumbersCardio)[1]){
+    comorbNumbersCardio[j,2] = comorbNumbersCardio[j,2] + sum(comorbidities[,i] == comorbNumbersCardio[j,1])
+  }
+}
+print(comorbNumbersCardio)
+```
+
+The data shows that one type of cardiovascular disease did not appear in our population: heart transplant (370). The rest did, although in some cases only a few patients presented with those diseases. Let's combine all of them into one class of heart disease. 
+We'll now add two columns to the dataset, one for diabetes and one for heart disease. The value 1 means no disease and 2 means the disease was present. this will be the case for both columns.
+
+
+```{r, create comorbidities columns}
+comorbNumbersDiabetes = c(800, 801, 802, 803, 804, 805, 809)
+
+importedData$diabetes = rep(1, dim(importedData)[1])
+for (i in 1:dim(comorbidities)[1]){
+  for (j in 1:dim(comorbidities)[2]){
+    for (k in 1:length(comorbNumbersDiabetes)){
+      if (comorbidities[i,j] == comorbNumbersDiabetes[k]){
+        importedData$diabetes[i] = 2
+      }
+    }
+  }
+}
+
+importedData$cardiovascularDisease = rep(1, dim(importedData)[1])
+for (i in 1:dim(comorbidities)[1]){
+  for (j in 1:dim(comorbidities)[2]){
+    for (k in 1:dim(comorbNumbersCardio)[1]){
+      if (comorbidities[i,j] == comorbNumbersCardio[k,1]){
+        importedData$cardiovascularDisease[i] = 2
+      }
+    }
+  }
+}
+
+```
+
+Let's make some pie charts to show the percentage of patients with these two diseases.
+
+```{r, visualize comorbidities}
+pieCVD = createPieChart(importedData$cardiovascularDisease, "Incidence of cardiovascular disease")
+pieDiabetes = createPieChart(importedData$diabetes, "Incidence of diabetes")
+multiplot(pieCVD, pieDiabetes, cols = 2)
+```
+
+Approximately half of our patients have some form of cardiovascular disease and only 12% have diabetes. 
+
+# Create a dataset for analysis
+Before we start anything else, we first need to create a dataset from the original dataset that contains only the input variables.
+These are:
+- Demographic variables. I only included "ch_indexgr" as this presents the absence/presence of comorbidities. The information of the other one is unclear, so I removed it. 
+- Any tumor-related variables. Tumor M stage was not added as all patients had M0. 
+- Answers to the epic questionnaire at diagnosis (time point 1, which is at diagnosis)
+- The hospital at which diagnosis took place. This information will be used for later splitting of the data. 
+
+```{r, create imput variables dataset}
+columnNamesForInputVars = c("ZKHanoniem_eerste", "treatments", "epic26_1_urineverlies1", "epic26_2_urineophouden1", "epic26_3_verbanden1", "epic26_4_nadruppelen1", "epic26_5_pijnplassen1", "epic26_6_bloedurine1", "epic26_7_zwakkestraal1", "epic26_8_aandrang1", "epic26_9_urineprobleem1", "epic26_10_drangontlasting1", "epic26_11_vakerontlasting1", "epic26_12_controledef1", "epic26_13_bloedontlasting1", "epic26_14_krampdarm1", "epic26_15_ontlastingprobleem1", "epic26_16_goederectie1", "epic26_17_goedklaarkomen1", "epic26_18_kwalerectie1", "epic26_19_kwanterectie1", "epic26_20_oordeelseksfunc1", "epic26_21_problseksfunc1", "epic26_22_opvliegers1", "epic26_23_gevoeligeborsten1", "epic26_24_depressie1", "epic26_25_weinigenergie1", "epic26_26_gewicht1", "sCT", "sCN", "nLeeft", "mri_vol1", "rectaal_vol", "pa_volume", "bpos_volecho1", "bpos_volecho2", "bpos_volecho3", "bpos_volecho4", "ch_indexgr", "lengte", "gewicht", "psa_diag", "gleason_group", "diabetes", "cardiovascularDisease", "hormoneTherapy", "alg_rook", "alg_alc", "nerveSparing")
+inputVariables = importedData[, columnNamesForInputVars]
+```
+
+On the other hand we have the variables we can potentially predict, our outcome variables:
+```{r, create output datasets}
+
+columnsForOutputVars1year = c("epic26_1_urineverlies2", "epic26_2_urineophouden2", "epic26_3_verbanden2", "epic26_4_nadruppelen2", "epic26_5_pijnplassen2", "epic26_6_bloedurine2", "epic26_7_zwakkestraal2", "epic26_8_aandrang2", "epic26_9_urineprobleem2", "epic26_10_drangontlasting2", "epic26_11_vakerontlasting2", "epic26_12_controledef2", "epic26_13_bloedontlasting2", "epic26_14_krampdarm2", "epic26_15_ontlastingprobleem2", "epic26_16_goederectie2", "epic26_17_goedklaarkomen2", "epic26_18_kwalerectie2", "epic26_19_kwanterectie2", "epic26_20_oordeelseksfunc2", "epic26_21_problseksfunc2"      , "epic26_22_opvliegers2", "epic26_23_gevoeligeborsten2", "epic26_24_depressie2", "epic26_25_weinigenergie2", "epic26_26_gewicht2")
+
+columnsForOutputVars2years = c("epic26_1_urineverlies3", "epic26_2_urineophouden3", "epic26_3_verbanden3", "epic26_4_nadruppelen3", "epic26_5_pijnplassen3", "epic26_6_bloedurine3", "epic26_7_zwakkestraal3", "epic26_8_aandrang3", "epic26_9_urineprobleem3", "epic26_10_drangontlasting3", "epic26_11_vakerontlasting3", "epic26_12_controledef3", "epic26_13_bloedontlasting3", "epic26_14_krampdarm3", "epic26_15_ontlastingprobleem3", "epic26_16_goederectie3", "epic26_17_goedklaarkomen3", "epic26_18_kwalerectie3", "epic26_19_kwanterectie3", "epic26_20_oordeelseksfunc3", "epic26_21_problseksfunc3"      , "epic26_22_opvliegers3", "epic26_23_gevoeligeborsten3", "epic26_24_depressie3", "epic26_25_weinigenergie3", "epic26_26_gewicht3")
+
+outcomes1year = importedData[, columnsForOutputVars1year]
+outcomes2years = importedData[, columnsForOutputVars2years]
+```
+
+## Convert non-sensical numbers and text 
+### Convert text
+Visual inspection of the input variables shows that 3 columns have text in them and will therefore need to be addressed:
+- sCT: contains information about T-stage, which contains letters after the stage number, for example A,B,C. We'll remove these and will only keep the numbers
+- sCN: contains 0's and X's. We'll convert the X's to 1's.
+
+```{r, convert text to numbers}
+inputVariables$sCT = as.numeric(removeTstageLetters(inputVariables$sCT))
+inputVariables$sCN = as.numeric(convertCharacterToNumber(as.character(inputVariables$sCN), 'X', 1))
+```
+
+### Convert non-sensical numbers
+With this we mean the numbers as presented in the metadata that are associated with unknowns, generally numbers in the 900s.
+Based on inspection of the metadata and inspection of the actual dataset this is relevant for the following columns:
+- gleason_group: values 0, 9
+- rectaal_vol: value 999
+- bpos_volecho: values 997, 998, 999, 888
+- mri_vol: value 999
+- pa_volume: value 999
+- lengte: value 999
+- gewicht: value 999
+We will convert these numbers to NaN.
+
+```{r, convert nonsensical numbers to NaN}
+inputVariables$gleason_group = convertNumberToNan(inputVariables$gleason_group, c(0,9))
+inputVariables$rectaal_vol = convertNumberToNan(inputVariables$rectaal_vol, 999)
+inputVariables$bpos_volecho1 = convertNumberToNan(inputVariables$bpos_volecho1, c(997,998,999))
+inputVariables$bpos_volecho2 = convertNumberToNan(inputVariables$bpos_volecho2, c(997,998,999))
+inputVariables$bpos_volecho3 = convertNumberToNan(inputVariables$bpos_volecho3, c(997,998,999))
+inputVariables$mri_vol1 = convertNumberToNan(inputVariables$mri_vol1, 999)
+inputVariables$pa_volume = convertNumberToNan(inputVariables$pa_volume, 999)
+inputVariables$lengte = convertNumberToNan(inputVariables$lengte, 999)
+inputVariables$gewicht = convertNumberToNan(inputVariables$gewicht, 999)
+```
+
+## check whether all columns are numeric
+We'll need to make sure that all data in the data frame is numeric before any calculations can be done.
+We can plot the class of each column by using the following command:
+
+```{r, check type of all columns}
+str(inputVariables)
+```
+
+These results show us that all columns are numeric or integers, so there's no action required here. 
+
+## check for missing values
+If we want to do data analysis on this dataset, we need to come up with a way to deal with missing values. First, we'll convert any empty cells to NA values. Then we'll remove columns (variables) with too many missing values, and finally we'll do the same for the rows (patients)
+
+### Check for empty cells and convert them to NaN
+```{r, convert empty to NaN}
+inputVariables = convertEmptyToNan(inputVariables)
+```
+
+### check NaN per variable (column)
+We will now also check for NaNs per variable instead of patients to remove any variables that cannot be used in the data analysis.
+
+```{r, check NaN portion per variable}
+# calculate NaNs
+nanInputVars = checkNanPercentagePerColumn(inputVariables)
+nanOutputVars1year = checkNanPercentagePerColumn(outcomes1year)
+nanOutputVars2years = checkNanPercentagePerColumn(outcomes2years)
+
+# plot NaNs
+scatterInput = createScatterBoxPlot(nanInputVars, 1, nanInputVars, title = "Input Variables (%)")
+scatter1year = createScatterBoxPlot(nanOutputVars1year, 1, nanOutputVars1year, title = "Outcomes after 1 year (%)")
+scatter2year = createScatterBoxPlot(nanOutputVars2years, 1, nanOutputVars2years, title = "Outcomes after 2 years (%)")
+multiplot(scatterInput, scatter1year, scatter2year, cols = 3)
+
+```
+The results show that the outcomes don't have very high percentages of missing values and that they don't present much spread between patients. We won't need to remove any variables there as these percentages will go down when patients with many missing values are removed. Some variables in the input variables do have very high numbers of missing values (>20%).
+
+Ideally, we would like to use rule-based removal of variables with a high percentage of missing values like the 95th percentile, but it doesn't work in this case as the 95th percentile is very close to 100% missing values. 
+
+```{r, percentile missing values}
+print(quantile(nanInputVars, 0.95))
+```
+Instead we'll evaluate the distribution of missing values using a histogram. 
+
+```{r, hist missing values}
+hist(nanInputVars, 100)
+``` 
+
+In the histogram you can see that most values have less than 20% missing values. So we will remove any columns with missing values > 20%.
+
+#### remove NaNs
+We will remove these high-NaN variables from all datasets and will convert the other NaNs to zeros for our analysis.
+
+```{r, remove high-NaN columns}
+cutoff = 20
+inputVariables = inputVariables[, -which(nanInputVars > cutoff)]
+``` 
+
+Now we need to convert the NaN values to a number so that we can do calculations with them. We'll convert them to 0. But before we can proceed, we first have to make sure that none of the variables actually contain 0's already. If that is the case, we need to fix this as it otherwise will introduce bias by wrongly identifying NaNs als non-missing values. 
+
+
+```{r, check for zeros in columns}
+for (column in colnames(inputVariables)){
+  if (0 %in% inputVariables[, column]){
+    print(column)
+    inputVariables[,column] = inputVariables[,column] +1
+  }
+}
+``` 
+
+There were two columns in which some of the original values were 0's. For each of these, 1 to every value was added to achieve non-zero values. 
+
+### check NaN per patient (per row)
+#### input variables
+Now, we'll check the percentage of missing values per row, or patient. 
+
+```{r, check NaN per patient}
+nanPerPatient = checkNanPercentagePerColumn(t(inputVariables))
+scatterNaN = createScatterBoxPlot(nanPerPatient, 1, nanPerPatient, "NaNs per patient for input variables")
+histNaN = createHistogram(nanPerPatient, "NaNs per patients for input variables")
+multiplot(scatterNaN, histNaN, cols = 2)
+```
+
+This shows that the majority of patients have <35% NaNs. But in order to decide on a specific cut-off we'll use the 95th percentile. Anything above or equal to that percentile will be removed.
+
+```{r, remove patients above 95% percentile}
+percentile = quantile(nanPerPatient, 0.95)
+inputVariables = inputVariables[-which(nanPerPatient>=percentile),]
+outcomes1year = outcomes1year[-which(nanPerPatient>=percentile),]
+outcomes2years = outcomes2years[-which(nanPerPatient>=percentile),]
+
+```
+
+
+#### outcome variables
+Then we'll use the same mechanism for both the 1-year and 2-year outcomes and remove any patients that have a high portion of NaNs.
+##### 1 year outcomes
+
+```{r, check NaNs in outcomes year 1}
+nanPerPatient = checkNanPercentagePerColumn(t(outcomes1year))
+scatterNaN = createScatterBoxPlot(nanPerPatient, 1, nanPerPatient, "NaNs per patient for 1 year outcomes")
+histNaN = createHistogram(nanPerPatient, "NaNs per patients for 1 year outcomes")
+multiplot(scatterNaN, histNaN, cols = 2)
+```
+
+This data shows a similar trend to the input variables, where the majority of the data does not have many missing values. Again, we'll remove all patients with >= than the 95th percentile in NaNs and create a specific data frame with input variables for the 1 year outcome predictions
+
+```{r, remove high NaNs in outcome 1 year}
+percentile = quantile(nanPerPatient, 0.95)
+inputVariablesForYear1Outcomes = inputVariables[-which(nanPerPatient>=percentile),]
+outcomes1year = outcomes1year[-which(nanPerPatient>=percentile),]
+paste("All patients with more NaNs than the 95th percentile (", round(percentile), "%) were removed", sep="")
+```
+
+##### 2 year outcomes
+We'll now do the same for the 2 year outcomes
+
+```{r, check high NaNs in 2 year outcomes}
+nanPerPatient = checkNanPercentagePerColumn(t(outcomes2years))
+scatterNaN = createScatterBoxPlot(nanPerPatient, 1, nanPerPatient, "NaNs per patient for 2 year outcomes")
+histNaN = createHistogram(nanPerPatient, "NaNs per patients for 2 year outcomes")
+multiplot(scatterNaN, histNaN, cols = 2)
+
+```
+We again see a similar trend, but now also with a peak at 100%. These patients have most likely not filled in the 2-year outcome questionnaire, resulting in 100% NaNs. We'll first remove all patients that have a 100% NaN rate. 
+
+```{r, remove all with 100% NaNs}
+inputVariablesForYear2Outcomes = inputVariables[-which(nanPerPatient==100),]
+outcomes2years = outcomes2years[-which(nanPerPatient==100),]
+```
+
+Then we'll redo our plots and check what the 95th percentile is first.
+
+```{r, check percentile}
+nanPerPatient = checkNanPercentagePerColumn(t(outcomes2years))
+scatterNaN = createScatterBoxPlot(nanPerPatient, 1, nanPerPatient, "NaNs per patient for 1 year outcomes")
+histNaN = createHistogram(nanPerPatient, "NaNs per patients for 1 year outcomes")
+multiplot(scatterNaN, histNaN, cols = 2)
+paste(quantile(nanPerPatient, 0.95))
+
+```
+
+Then we remove everything that has more NaNs than the 95th percentile.
+
+```{r, remove high NaN outcomes year 2}
+percentile = quantile(nanPerPatient, 0.95)
+inputVariablesForYear2Outcomes = inputVariablesForYear2Outcomes[-which(nanPerPatient>=percentile),]
+outcomes2years = outcomes2years[-which(nanPerPatient>=percentile),]
+paste("All patients with more NaNs than the 95th percentile (", round(percentile), "%) were removed", sep="")
+```
+
+We are now left with a lower number of patients, but with higher degrees of complete data for each patient. 
+
+```{r, compare patient numbers after NaN removal}
+paste(dim(inputVariablesForYear1Outcomes)[1], " patients instead of ", dim(importedData)[1], " for our 1-year predictions (",
+      round(dim(inputVariablesForYear1Outcomes)[1]/dim(importedData)[1]*100, digits=1), "%) & ",
+      dim(inputVariablesForYear2Outcomes)[1], " patients instead of ", dim(importedData)[1], " for our 2-year predictions (",
+      round(dim(inputVariablesForYear2Outcomes)[1]/dim(importedData)[1]*100, digits=1), "%)", sep="")
+```
+
+There is an approximately 20% difference in patient numbers between the two datasets (1 vs. 2 years). 
+
+## converting NaNs to zeros. 
+
+Now we can proceed with converting all NaNs to zeros.
+
+```{r}
+inputVariablesForYear1Outcomes = convertNanToZero(inputVariablesForYear1Outcomes)
+inputVariablesForYear2Outcomes = convertNanToZero(inputVariablesForYear2Outcomes)
+outcomes1year = convertNanToZero(outcomes1year)
+outcomes2years = convertNanToZero(outcomes2years)
+```
+
+
+
+# Visualize the data distributions of the various data elements
+The goal in this section is to evaluate the distribution of data in some of the available demographic data. 
+Since weight and height were removed, only age is left as a demographic variable.
+
+## Age:
+
+```{r, demographics boxplots}
+age1year = createScatterBoxPlot(inputVariablesForYear1Outcomes$nLeeft, 1, inputVariablesForYear1Outcomes$nLeeft, title="Age for 1 year dataset")
+age2years = createScatterBoxPlot(inputVariablesForYear2Outcomes$nLeeft, 1, inputVariablesForYear2Outcomes$nLeeft, title="Age for 2 year dataset")
+multiplot(age1year, age2years, cols=2)
+```
+
+## Gleason group
+
+```{r, gleason group boxplot}
+pie1year = createPieChart(inputVariablesForYear1Outcomes$gleason_group, "Gleason groups for 1 year dataset")
+pie2years = createPieChart(inputVariablesForYear2Outcomes$gleason_group, "Gleason groups for 2 year dataset")
+
+multiplot(pie1year, pie2years, cols = 2)
+```
+## Alcohol use
+
+```{r, alcohol use boxplot}
+pie1year = createPieChart(inputVariablesForYear1Outcomes$alg_alc, "Alcohol use for 1 year dataset")
+pie2years = createPieChart(inputVariablesForYear2Outcomes$alg_alc, "Alcohol use for 2 year dataset")
+
+multiplot(pie1year, pie2years, cols = 2)
+```
+
+
+## Smoking status
+
+```{r, smoking status boxplot}
+pie1year = createPieChart(inputVariablesForYear1Outcomes$alg_rook, "Smoking status for 1 year dataset")
+pie2years = createPieChart(inputVariablesForYear2Outcomes$alg_rook, "Smoking status for 2 year dataset")
+
+multiplot(pie1year, pie2years, cols = 2)
+```
+
+
+# PCA analysis
+Before we can make prediction models, we first need to investigate whether we can find any trends in the data that we may or may not want/need
+
+## 1-year outcome dataset
+First we'll look at the 1-year dataset
+
+
+```{r, calculate pca 1 year}
+pcaObject = prcomp(inputVariablesForYear1Outcomes, scale. = T, center = F)
+createLoadingsPlot(as.data.frame(pcaObject$rotation), colnames(inputVariablesForYear1Outcomes), "PCA loadings")
+```
+
+The plot above shows the loadings plot of the PCA, which shows that most questionnaire answers don't explain much of the data, but ch_index does.
+Let's make a PCA plot without ch_index and ch_indexgr:
+
+```{r, 1 year loadings plot without ch_index}
+input1yearForPca = inputVariablesForYear1Outcomes[, -which(names(inputVariablesForYear1Outcomes) %in% c("ch_index", "ch_indexgr"))]
+pcaObject = prcomp(input1yearForPca, scale. = T, center = F)
+createLoadingsPlot(as.data.frame(pcaObject$rotation), colnames(input1yearForPca), "PCA loadings")
+
+```
+
+### input variables
+Below you'll see a few PCA plots of interest for the 1-year dataset:
+
+#### Hospital of diagnosis
+
+```{r, 1 year pca hospitals}
+createScatterplot(pcaObject$x, pcaObject$x[,1], pcaObject$x[,2], input1yearForPca[,which(names(input1yearForPca) == "ZKHanoniem_eerste")], "PCA of hospital of diagnosis")
+```
+
+No clustering seen based on the hospital of diagnosis.
+
+#### Age
+```{r, 1 year pca age}
+createScatterplot(pcaObject$x, pcaObject$x[,1], pcaObject$x[,2], input1yearForPca[,which(names(input1yearForPca) == "nLeeft")], "PCA of age")
+```
+
+Also no clustering based on age.
+
+#### Tumor staging
+```{r, 1 year pca tumor stage}
+createScatterplot(pcaObject$x, pcaObject$x[,1], pcaObject$x[,2], factor(input1yearForPca[,which(names(input1yearForPca) == "sCT")]), "PCA of tumor T stage")
+createScatterplot(pcaObject$x, pcaObject$x[,1], pcaObject$x[,2], factor(input1yearForPca[,which(names(input1yearForPca) == "sCN")]), "PCA of tumor N stage")
+```
+
+There is a potential cluster for the N stage. For T, there is none. For M, all values are 1.
+
+#### PSA at diagnosis
+```{r, 1 year pca psa}
+createScatterplot(pcaObject$x, pcaObject$x[,1], pcaObject$x[,2], input1yearForPca[,which(names(input1yearForPca) == "psa_diag")], "PCA of PSA at diagnosis")
+```
+
+It seems most patients have lower values of PSA, and the high values are not common. So no clustering here.
+
+#### treatment
+```{r, 1 year pca treatments}
+createScatterplot(pcaObject$x, pcaObject$x[,1], pcaObject$x[,2], factor(input1yearForPca[,which(names(input1yearForPca) == "treatments")]), "PCA of treatment")
+```
+
+No apparent clustering for the different types of treatment.
+
+#### diabetes
+```{r, 1 year pca diabetes}
+createScatterplot(pcaObject$x, pcaObject$x[,1], pcaObject$x[,2], factor(input1yearForPca[,which(names(input1yearForPca) == "diabetes")]), "PCA of diabetes")
+```
+
+No clusters visualised
+
+#### cardiovascular disease
+```{r, 1 year pca cvd}
+createScatterplot(pcaObject$x, pcaObject$x[,1], pcaObject$x[,2], factor(input1yearForPca[,which(names(input1yearForPca) == "cardiovascularDisease")]), "PCA of cardiovascular disease")
+```
+
+No clusters visualised
+
+#### Alcohol use
+```{r, 1 year pca alcohol use}
+createScatterplot(pcaObject$x, pcaObject$x[,1], pcaObject$x[,2], factor(input1yearForPca[,which(names(input1yearForPca) == "alg_alc")]), "PCA of alcohol use")
+```
+
+No clustering visible
+
+#### Smoking status
+```{r, 1 year pca smoking status}
+createScatterplot(pcaObject$x, pcaObject$x[,1], pcaObject$x[,2], factor(input1yearForPca[,which(names(input1yearForPca) == "alg_rook")]), "PCA of smoking status")
+```
+
+No clustering visible
+
+### 2-year outcomes
+Now we'll do the same for the 2-year dataset
+
+#### loadings plot
+
+```{r, calculate 2 year pca }
+input2yearsForPca = inputVariablesForYear2Outcomes[, -which(names(inputVariablesForYear2Outcomes) %in% c("ch_index", "ch_indexgr"))]
+pcaObject = prcomp(input2yearsForPca, scale. = T, center = F)
+createLoadingsPlot(as.data.frame(pcaObject$rotation), colnames(input2yearsForPca), "PCA loadings")
+
+```
+
+We see a similar trend for the 2-year dataset.
+
+#### Hospital of diagnosis
+```{r, 2 year pca hospitals }
+createScatterplot(pcaObject$x, pcaObject$x[,1], pcaObject$x[,2], input2yearsForPca[,which(names(input2yearsForPca) == "ZKHanoniem_eerste")], "PCA of hospital of diagnosis")
+```
+
+No clustering seen based on the hospital of diagnosis.
+
+#### Age
+```{r, 2 year pca age}
+createScatterplot(pcaObject$x, pcaObject$x[,1], pcaObject$x[,2], input2yearsForPca[,which(names(input2yearsForPca) == "nLeeft")], "PCA of age")
+```
+
+Also no clustering based on age.
+
+#### Tumor staging
+```{r, 2 year pca tumor stage}
+createScatterplot(pcaObject$x, pcaObject$x[,1], pcaObject$x[,2], factor(input2yearsForPca[,which(names(input2yearsForPca) == "sCT")]), "PCA of tumor T stage")
+createScatterplot(pcaObject$x, pcaObject$x[,1], pcaObject$x[,2], factor(input2yearsForPca[,which(names(input2yearsForPca) == "sCN")]), "PCA of tumor N stage")
+```
+
+There is a potential cluster for the N stage. For T, there is none. For M, all values are 1.
+
+#### PSA at diagnosis
+```{r, 2 year pca psa}
+createScatterplot(pcaObject$x, pcaObject$x[,1], pcaObject$x[,2], input2yearsForPca[,which(names(input2yearsForPca) == "psa_diag")], "PCA of PSA at diagnosis")
+```
+
+It seems most patients have lower values of PSA, and the high values are not common. So no clustering here.
+
+#### treatment
+```{r, 2 year pca treatments}
+createScatterplot(pcaObject$x, pcaObject$x[,1], pcaObject$x[,2], factor(input2yearsForPca[,which(names(input2yearsForPca) == "treatments")]), "PCA of treatment")
+```
+
+No apparent clustering for the different types of treatment.
+
+#### diabetes
+```{r, 2 year pca diabetes}
+createScatterplot(pcaObject$x, pcaObject$x[,1], pcaObject$x[,2], factor(input2yearsForPca[,which(names(input2yearsForPca) == "diabetes")]), "PCA of diabetes")
+```
+
+No clusters visualised
+
+#### cardiovascular disease
+```{r, 2 year pca cvd}
+createScatterplot(pcaObject$x, pcaObject$x[,1], pcaObject$x[,2], factor(input2yearsForPca[,which(names(input2yearsForPca) == "cardiovascularDisease")]), "PCA of cardiovascular disease")
+```
+
+No clusters visualised
+
+#### Alcohol use
+```{r, 2 year pca alcohol use}
+createScatterplot(pcaObject$x, pcaObject$x[,1], pcaObject$x[,2], factor(input2yearsForPca[,which(names(input2yearsForPca) == "alg_alc")]), "PCA of alcohol use")
+```
+
+No clustering visible
+
+#### Smoking status
+```{r, 2 year pca smoking status}
+createScatterplot(pcaObject$x, pcaObject$x[,1], pcaObject$x[,2], factor(input2yearsForPca[,which(names(input2yearsForPca) == "alg_rook")]), "PCA of smoking status")
+```
+
+No clustering visible
+
+# Split the data into a training and external validation set
+In order to make an effective split of the data and to ensure that data is not skewed when split, we will be splitting the data with these conditions:
+- approximately 75% of all 964 patients will be assigned to the training set and 25% will be assigned to the test set
+- approximately 75% of all hospitals will be assigned to the training set and 25% will be assigned to the test set
+We then test whether there are significant differences in general characteristics: age, TNM staging (M stage is zero everywhere, so we can't test that one) and gleason score of the two sets should not be significantly different.
+
+
+## year 1 dataset
+
+```{r, split 1 year dataset}
+allData1year = cbind(inputVariablesForYear1Outcomes, outcomes1year)
+allData1year = createValidationSet(allData1year, 0.75, which(names(inputVariablesForYear1Outcomes) == "ZKHanoniem_eerste"), 0.75)
+
+testDifferenceBetweenSetsWithBoxplot(allData1year[[1]], allData1year[[2]], which(names(inputVariablesForYear1Outcomes) == "nLeeft"))
+testDifferenceBetweenSetsWithBoxplot(allData1year[[1]], allData1year[[2]], which(names(inputVariablesForYear1Outcomes) == "sCT"))
+testDifferenceBetweenSetsWithBoxplot(allData1year[[1]], allData1year[[2]], which(names(inputVariablesForYear1Outcomes) == "sCN"))
+testDifferenceBetweenSetsWithBoxplot(allData1year[[1]], allData1year[[2]], which(names(inputVariablesForYear1Outcomes) == "psa_diag"))
+testDifferenceBetweenSetsWithBoxplot(allData1year[[1]], allData1year[[2]], which(names(inputVariablesForYear1Outcomes) == "gleason_group"))
+```
+
+None of the characteristics are significantly different between the training and test set.
+
+The first column of the input variables, hospital of diagnosis will be excluded here, because we don't want it as an input variable.
+```{r, remove hospital info}
+allData1year[[1]] = allData1year[[1]][,-which(names(allData1year[[1]]) == "ZKHanoniem_eerste")]
+allData1year[[2]] = allData1year[[2]][,-which(names(allData1year[[2]]) == "ZKHanoniem_eerste")]
+
+```
+
+
+## year 2 dataset
+
+```{r, create 2 year dataset}
+allData2years = cbind(inputVariablesForYear2Outcomes, outcomes2years)
+allData2years = createValidationSet(allData2years, 0.75, which(names(allData2years) == "ZKHanoniem_eerste"), 0.75)
+
+
+testDifferenceBetweenSetsWithBoxplot(allData2years[[1]], allData2years[[2]], which(names(inputVariablesForYear2Outcomes) == "nLeeft"))
+testDifferenceBetweenSetsWithBoxplot(allData2years[[1]], allData2years[[2]], which(names(inputVariablesForYear2Outcomes) == "sCT"))
+testDifferenceBetweenSetsWithBoxplot(allData2years[[1]], allData2years[[2]], which(names(inputVariablesForYear2Outcomes) == "sCN"))
+testDifferenceBetweenSetsWithBoxplot(allData2years[[1]], allData2years[[2]], which(names(inputVariablesForYear2Outcomes) == "psa_diag"))
+testDifferenceBetweenSetsWithBoxplot(allData2years[[1]], allData2years[[2]], which(names(inputVariablesForYear2Outcomes) == "gleason_group"))
+```
+
+For the two-year dataset, the T and N stages are significantly different.
+I'm going to create other visualizations for their distributions in the training and test set.
+
+But first, we'll remove the column with hospital identifiers like we did for the 1-year dataset.
+
+```{r, remove hospital 2 years}
+allData2years[[1]] = allData2years[[1]][,-which(names(allData2years[[1]]) == "ZKHanoniem_eerste")]
+allData2years[[2]] = allData2years[[2]][,-which(names(allData2years[[2]]) == "ZKHanoniem_eerste")]
+
+```
+
+
+### T stage
+
+```{r, plot t stage}
+pTraining = createPieChart(allData2years[[1]]$sCT, "T stage training set")
+pTest = createPieChart(allData2years[[2]]$sCT, "T stage test set")
+
+multiplot(pTraining, pTest, cols = 2)
+```
+
+The distribution of the T stages between the training and test set are a bit different, mainly due to a larger percentage of stage 1 patients in the test set. 
+
+### N stage
+
+```{r, plot n stage}
+pTraining = createPieChart(allData2years[[1]]$sCN, "N stage training set")
+pTest = createPieChart(allData2years[[2]]$sCN, "N stage test set")
+
+multiplot(pTraining, pTest, cols = 2)
+```
+
+In the case of the N stage, more patients have an N0 stage in the training set.
+
+
+# save important information needed for machine learning (other RMarkdown file called "prospectMachineLearning)
+
+```{r, save data}
+saveRDS(allData1year, "path/to/data/allData1year")
+saveRDS(allData2years, "path/to/data/allData2years")
+```

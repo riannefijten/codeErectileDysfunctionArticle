@@ -1,0 +1,167 @@
+---
+title: "PROSPECT logistic regression for reliability of erection - 2 years"
+author: "Dr. Rianne Fijten"
+output: html_document
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+
+setwd("C:/Set/your/path/here/")
+
+scriptsLocations = paste(getwd(), "/scripts/", sep="")
+source("scripts/importAllHandmadeFunctions.R")
+importAllHandmadeFunctions(scriptsLocations)
+library(ggplot2)
+allData2years = readRDS("path/to/data/allData2years")
+```
+
+# build 1-year prediction models for erectile dysfunction
+We will create a logit prediction model for the outcome *reliability*, which is defined as the reliability of the erection, i.e. how often can you get an erection when you'd like an erection.
+
+```{r, create datasets}
+trainingSet = allData2years[[1]]
+trainingSet = trainingSet[,1:38]
+
+testSet = allData2years[[2]]
+testSet = testSet[,1:38]
+``` 
+
+Before we start, we'll first remove the variables related to hot flashes and sensitive breasts as these are not to be included upon request by collaborators.
+
+```{r}
+trainingSet = trainingSet[,-grep("epic26_22_opvliegers1", names(trainingSet))]
+trainingSet = trainingSet[,-grep("epic26_23_gevoeligeborsten1", names(trainingSet))]
+
+testSet = testSet[,-grep("epic26_22_opvliegers1", names(testSet))]
+testSet = testSet[,-grep("epic26_23_gevoeligeborsten1", names(testSet))]
+```
+
+First we recreate the training and test set with only the input variables and the outcome we want, in this case *"epic26_19_kwanterectie3". We'll also remove the outcome data that we're not interested in right now from the training and test set.
+
+```{r, select outcomes}
+outcomeTraining = allData2years[[1]]$epic26_19_kwanterectie3
+outcomeTest = allData2years[[2]]$epic26_19_kwanterectie3
+```
+
+Then we'll visualize the distributions of this outcome for the training set to decide how to transform it into a binary classification. For this outcome, 1 means that patients could never get an erection, whereas 5 means they could always get an erection when they wanted one.
+
+```{r, pie charts for urge}
+pTraining = createPieChart(outcomeTraining, "Erection reliability in training set")
+pTest = createPieChart(outcomeTest, "Erection reliability in test set")
+
+multiplot(pTraining, pTest, cols = 2)
+```
+
+The dataset shows that 46-48% of patients are never able to get an erection when they want one. Therefore we will try two approaches. First, we'll compare patients without any issues to patients with some issues (ranging in severity, i.e. who answered 1-4). Second, we'll compare patients that can never have an erection (answer = 1) to the others (answer = 2-5).
+
+We'll first remove patients with missing values (answer = 0)
+
+```{r}
+trainingSet = trainingSet[-which(outcomeTraining == 0),]
+outcomeTraining = outcomeTraining[-which(outcomeTraining == 0)]
+testSet = testSet[-which(outcomeTest == 0),]
+outcomeTest = outcomeTest[-which(outcomeTest == 0)]
+
+pTraining = createPieChart(outcomeTraining, "Erection reliability in training set")
+pTest = createPieChart(outcomeTest, "Erection reliability in test set")
+
+multiplot(pTraining, pTest, cols = 2)
+```
+
+Overall (for both training and test set) the distribution of the outcome is as follows:
+
+```{r pie chart of all data}
+createPieChart(c(outcomeTraining, outcomeTest))
+```
+
+Now we'll investigate whether the treatment received may have an influence on this outcome.
+
+```{r, distribution treatment + urge answers}
+adjacencyList = createAdjacencyList(cbind(trainingSet$treatments, outcomeTraining))
+
+nodeNames = c("Prostatectomy", "EBRT", "Brachy", "Active surveillance", "I NEVER had an erection when I wanted one", "I had an erection LESS THAN HALF the time I wanted one", "I had an erection ABOUT HALF the time I wanted one", "I had an erection MORE THAN HALF the time I wanted one", "I had an erection WHENEVER I wanted one")
+createSankeyDiagram(adjacencyList, nodeNames)
+```
+
+The data shows that prostatectomy in fact produces most problems with erections. 
+
+## patients that never have an erection vs. all others
+
+We'll make our binary dataset for the following comparison: never vs. all others. Patients that answered 1 could never have an erection, whereas patients still had the ability to produce an erection, albeit not necessarily always. So we'll make the ones that answered 1 class 1. and the ones that answered 2-5 class 2.
+
+```{r, binary outcome 2}
+binaryOutcomeTraining = createBinaryDataset(outcomeTraining, 1, seq(from = 2, to = 5))
+binaryOutcomeTest = createBinaryDataset(outcomeTest, 1, seq(from = 2, to = 5))
+```
+
+## Recursive Feature Elimination
+Before going on to other methods, if necessary, we'll first explore logistic regression with recursive feature elimination. We'll save this RFE logit model to a file since re-running the RFE will yield (slightly) different results each time. *(The creation of the RFE logit model and its saving have  been commented out for the purpose of creating the Knitted RMarkdown file and a load is added instead.)*
+
+```{r, rfe logistic regression 2}
+# glmProfile_NeverErection = performLogitRfe(trainingSet, binaryOutcomeTraining)
+# saveRDS(glmProfile_NeverErection, paste(getwd(), "/models/rfeResults_Erections_reliability_2years_neverErection_noHotFlashesSensBreasts.rds", sep = ""))
+glmProfile_NeverErection = readRDS(paste(getwd(), "/models/rfeResults_Erections_reliability_2years_neverErection_noHotFlashesSensBreasts.rds", sep = ""))
+plot(glmProfile_NeverErection, type=c("g", "o"))
+```
+
+Let's run logistic regression to select the best model.
+
+```{r}
+varImportance = calculateVariableImportance(glmProfile_NeverErection)
+allLogitModels = reduceVariablesLogit(trainingSet, binaryOutcomeTraining, varImportance)
+{plot(rev(allLogitModels[[2]]$numberOfVariables), rev(allLogitModels[[2]]$AUC), ylim = c(0, 1), pch = 16)
+  points(rev(allLogitModels[[2]]$numberOfVariables), rev(allLogitModels[[2]]$sensitivity), col = "red",  pch = 16)
+  points(rev(allLogitModels[[2]]$numberOfVariables), rev(allLogitModels[[2]]$specificity), col =  "blue",  pch = 16)
+  points(rev(allLogitModels[[2]]$numberOfVariables), rev(allLogitModels[[2]]$overallAccuracy), col = "green",  pch = 16)
+  abline(v=12, col = "red")
+  legend("bottomright", legend = c("AUC", "sensitivity", "specificity", "overall accuracy"), col = c("black", "red", "blue", "green"), pch = 16)}
+```
+
+The model with 9 variables seems to be the best option. It has high sensitivity and the highest specificity below 12 variables.
+
+```{r}
+chosenModel = 9
+glmProfile_NeverErection_individual = allLogitModels[[1]][[dim(trainingSet)[2] - chosenModel]]
+saveRDS(glmProfile_NeverErection_individual, "models/rfeResults_Erections_reliability_2years_neverErection_individual_noHotFlashesSensBreasts.rds")
+glmProfile_NeverErection_individual$coefficients
+```
+
+Now we want know how this model performs on our training and test set.
+
+```{r}
+trainingAccuracy = calculateAccuracy(glmProfile_NeverErection_individual, binaryOutcomeTraining)
+trainingAccuracy[[1]] # sensitivity/specificity
+trainingAccuracy[[2]] # confusionMatrix
+createROCCurve(glmProfile_NeverErection_individual, binaryOutcomeTraining)
+```
+
+The sensitivity is really good and the specificity ok. Overall accuracy is also good.
+
+## Prediction onto test set.
+
+```{r}
+testAccuracy = calculateAccuracy(glmProfile_NeverErection_individual, binaryOutcomeTest, testSet)
+testAccuracy[[1]] # sensitivity/specificity
+testAccuracy[[2]] # confusionMatrix
+createROCCurve(glmProfile_NeverErection_individual, binaryOutcomeTest, testSet)
+
+```
+The accuracy is a bit lower in the test set, but not bad.
+
+# nomogram
+As a final step, we create a nomogram based on the model
+
+```{r}
+library(rms)
+dd = datadist(glmProfile_NeverErection_individual$data)
+options(datadist = 'dd')
+
+f = lrm(glmProfile_NeverErection_individual$model$`factor(outcomeToTest)` ~  ch_indexgr + gleason_group + epic26_14_krampdarm1 + hormoneTherapy + epic26_19_kwanterectie1 + sCT + diabetes + epic26_18_kwalerectie1 + treatments, data = glmProfile_NeverErection_individual$data)
+
+#summary(f)
+nom = nomogram(f, fun=function(x)1/(1+exp(-x)), # or fun=plogis
+                fun.at=c(.001,.01,.05,seq(0,1,by=.1),.95,.99,.999),
+                funlabel="Outcome to test Probability", lp=F)
+plot(nom, force.label=T, xfrac=0.25, cex.axis=.5, cex.var=0.5, tcl=-0.35, ia.space = 0.1)
+```
