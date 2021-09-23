@@ -102,7 +102,7 @@ createSankeyDiagram3Timepoints(adjacencyList0to1, adjacencyList1to2, nodeNames)
 
 ```
 
-## Quantity of erections, a.k.a. firmness
+## Quality of erections, a.k.a. firmness
 ```{r, quality of erections}
 convertedData = convertNanToZero(importedData[,which(grepl("kwalerectie", names(importedData)))])
 adjacencyList0to1 = createAdjacencyList(convertedData[1:2])
